@@ -45,13 +45,14 @@ async def handle_start(event):
         print(f"✅ New user added: {user_id}")
     await event.respond(
         "You're now subscribed to crypto updates!\n\n"
-        "You'll receive updates every <b>30 minutes</b>, "
         "starting from the next <b>hour or half hour</b> mark.\n\n"
-        "✅ Updates include: BTC, ETH, SOL, ETHFI.",
+        "✅ Updates include: BTC, ETH, SOL, ETHFI." \
+        "\n\n"
+        "Use <b>/help</b> to see available commands.",
         parse_mode='HTML'
     )
 
-@bot.on(events.NewMessage(pattern=r'/set_alert (\w+) (\d+\.?\d*)'))
+@bot.on(events.NewMessage(pattern=r'/sa (\w+) (\d+\.?\d*)'))
 async def set_price_alert(event):
     user_id = event.sender_id
     symbol = event.pattern_match.group(1).upper()
@@ -86,40 +87,40 @@ async def set_price_alert(event):
 
 
 # Send prices every 30 minutes from the next aligned time
-async def send_half_hourly_prices():
-    now = datetime.now()
-    if now.minute < 30:
-        next_mark = now.replace(minute=30, second=0, microsecond=0)
-    else:
-        next_mark = (now + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
-    wait_seconds = (next_mark - now).total_seconds()
-    print(f"⏳ Waiting {wait_seconds:.0f} seconds until next 30-min mark ({next_mark.strftime('%H:%M:%S')})")
-    await asyncio.sleep(wait_seconds)
+# async def send_half_hourly_prices():
+#     now = datetime.now()
+#     if now.minute < 30:
+#         next_mark = now.replace(minute=30, second=0, microsecond=0)
+#     else:
+#         next_mark = (now + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
+#     wait_seconds = (next_mark - now).total_seconds()
+#     print(f"⏳ Waiting {wait_seconds:.0f} seconds until next 30-min mark ({next_mark.strftime('%H:%M:%S')})")
+#     await asyncio.sleep(wait_seconds)
 
-    while True:
-        prices = fetch_prices()
-        msg = f"📊 <b>Crypto Price Update</b> <i>({datetime.now().strftime('%H:%M')})</i>\n\n"
-        for sym, val in prices.items():
-            if val:
-                emoji = (
-                    "🟢" if sym.startswith("BTC") else
-                    "🔵" if sym.startswith("ETH") else
-                    "🟣"
-                )
-                msg += f"{emoji} <b>{sym}</b>: <code>${val:,.4f}</code>\n"
-            else:
-                msg += f"❌ <b>{sym}</b>: <i>Error fetching price</i>\n"
+#     while True:
+#         prices = fetch_prices()
+#         msg = f"📊 <b>Crypto Price Update</b> <i>({datetime.now().strftime('%H:%M')})</i>\n\n"
+#         for sym, val in prices.items():
+#             if val:
+#                 emoji = (
+#                     "🟢" if sym.startswith("BTC") else
+#                     "🔵" if sym.startswith("ETH") else
+#                     "🟣"
+#                 )
+#                 msg += f"{emoji} <b>{sym}</b>: <code>${val:,.4f}</code>\n"
+#             else:
+#                 msg += f"❌ <b>{sym}</b>: <i>Error fetching price</i>\n"
 
-        user_ids = {user["user_id"] for user in users_col.find()}
-        for user_id in user_ids:
-            try:
-                await bot.send_message(user_id, msg, parse_mode='HTML')
-            except Exception as e:
-                print(f"❌ Could not send to {user_id}: {e}")
+#         user_ids = {user["user_id"] for user in users_col.find()}
+#         for user_id in user_ids:
+#             try:
+#                 await bot.send_message(user_id, msg, parse_mode='HTML')
+#             except Exception as e:
+#                 print(f"❌ Could not send to {user_id}: {e}")
 
-        await asyncio.sleep(1800)  # Sleep for 30 minutes
+#         await asyncio.sleep(1800)  # Sleep for 30 minutes
 
-@bot.on(events.NewMessage(pattern='/list_alerts'))
+@bot.on(events.NewMessage(pattern='/la'))
 async def list_alerts(event):
     user_id = event.sender_id
     alerts = list(db['alerts'].find({"user_id": user_id, "triggered": False}))
@@ -141,6 +142,19 @@ async def list_alerts(event):
             ],
             parse_mode='HTML'
         )
+
+@bot.on(events.NewMessage(pattern='/help'))
+async def handle_help(event):
+    help_msg = (
+        "<b>🛠 Available Commands:</b>\n\n"
+        "<b>/price</b> — Get the latest crypto prices instantly\n"
+        "<b>/sa SYMBOL PRICE</b> — Set an alert when price crosses a level (e.g., <code>/sa BTCUSDT 65000</code>)\n"
+        "<b>/la</b> — List your active price alerts with inline cancel buttons\n"
+        "<b>/ca SYMBOL</b> — Cancel all active alerts for a symbol (e.g., <code>/ca ETHUSDT</code>)\n"
+        "<b>/help</b> — Show this help message\n\n"
+        "<i>💡 Supported Symbols: BTCUSDT, ETHUSDT, SOLUSDT, ETHFIUSDT</i>"
+    )
+    await event.respond(help_msg, parse_mode='HTML')
 
 @bot.on(events.CallbackQuery(pattern=b'cancel_(.*)'))
 async def cancel_alert_button(event):
@@ -191,7 +205,7 @@ async def watch_alerts():
 
         await asyncio.sleep(10)  # Poll every 10 seconds
 
-@bot.on(events.NewMessage(pattern=r'/cancel_alert (\w+)'))
+@bot.on(events.NewMessage(pattern=r'/ca (\w+)'))
 async def cancel_alert_by_symbol(event):
     user_id = event.sender_id
     symbol = event.pattern_match.group(1).upper()
@@ -231,7 +245,7 @@ async def main():
     print("✅ Bot started...")
     await asyncio.gather(
         bot.run_until_disconnected(),
-        send_half_hourly_prices(),
+        # send_half_hourly_prices(),
         watch_alerts()
     )
 
