@@ -43,8 +43,8 @@ async def handle_start(event):
         users_col.insert_one({"user_id": user_id})
         print(f"✅ New user added: {user_id}")
     await event.respond(
-        "🚀 You're now subscribed to crypto updates!\n\n"
-        "🕒 You'll receive updates every <b>30 minutes</b>, "
+        "You're now subscribed to crypto updates!\n\n"
+        "You'll receive updates every <b>30 minutes</b>, "
         "starting from the next <b>hour or half hour</b> mark.\n\n"
         "✅ Updates include: BTC, ETH, SOL, ETHFI.",
         parse_mode='HTML'
