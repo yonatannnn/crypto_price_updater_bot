@@ -53,10 +53,10 @@ async def handle_start(event):
 # Send prices every 30 minutes from the next aligned time
 async def send_half_hourly_prices():
     now = datetime.now()
-    minute = 30 if now.minute < 30 else 60
-    next_mark = now.replace(minute=minute, second=0, microsecond=0)
-    if minute == 60:
-        next_mark += timedelta(hours=1)
+    if now.minute < 30:
+        next_mark = now.replace(minute=30, second=0, microsecond=0)
+    else:
+        next_mark = (now + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
     wait_seconds = (next_mark - now).total_seconds()
     print(f"⏳ Waiting {wait_seconds:.0f} seconds until next 30-min mark ({next_mark.strftime('%H:%M:%S')})")
     await asyncio.sleep(wait_seconds)
