@@ -52,11 +52,17 @@ async def handle_start(event):
         parse_mode='HTML'
     )
 
-@bot.on(events.NewMessage(pattern=r'/sa (\w+) (\d+\.?\d*)'))
-async def set_price_alert(event):
+@bot.on(events.NewMessage(pattern=r'/sa (\w+)(?:\s+([\d\s.]+))?'))
+async def set_price_alerts(event):
     user_id = event.sender_id
-    symbol = event.pattern_match.group(1).upper()
-    price = float(event.pattern_match.group(2))
+    parts = event.raw_text.split()
+
+    if len(parts) < 3:
+        await event.respond("⚠️ Please provide a symbol and at least one price.\nExample: <code>/sa ETHUSDT 2800 2769 2390</code>", parse_mode='HTML')
+        return
+
+    symbol = parts[1].upper()
+    price_values = parts[2:]
 
     valid_symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "ETHFIUSDT"]
     if symbol not in valid_symbols:
@@ -68,22 +74,32 @@ async def set_price_alert(event):
         await event.respond("⚠️ Could not fetch current price.")
         return
 
-    direction = "above" if price > current_price else "below"
-    db['alerts'].insert_one({
-        "user_id": user_id,
-        "symbol": symbol,
-        "target_price": price,
-        "direction": direction,
-        "triggered": False,
-        "created_at": datetime.utcnow()
-    })
+    confirmations = []
+    for price_str in price_values:
+        try:
+            price = float(price_str)
+            direction = "above" if price > current_price else "below"
 
-    arrow = "🔼" if direction == "above" else "🔽"
+            db['alerts'].insert_one({
+                "user_id": user_id,
+                "symbol": symbol,
+                "target_price": price,
+                "direction": direction,
+                "triggered": False,
+                "created_at": datetime.utcnow()
+            })
+
+            arrow = "🔼" if direction == "above" else "🔽"
+            confirmations.append(f"{arrow} <code>${price:,.2f}</code>")
+        except ValueError:
+            confirmations.append(f"❌ Invalid price: {price_str}")
+
     await event.respond(
-        f"📍 Alert set for <b>{symbol}</b> {arrow} <code>${price:,.2f}</code>\n"
-        f"Current: <code>${current_price:,.2f}</code>",
+        f"📍 Alerts for <b>{symbol}</b>:\n" + "\n".join(confirmations) +
+        f"\n\nCurrent: <code>${current_price:,.2f}</code>",
         parse_mode='HTML'
     )
+
 
 
 # Send prices every 30 minutes from the next aligned time
