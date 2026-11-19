@@ -26,7 +26,7 @@ $SSH "set -e
 
 echo "==> Copying files"
 rsync -az --rsync-path="sudo rsync" -e "ssh $SSH_OPTS" \
-  crypto_bot.py requirements.txt deploy/cryptobot.service "$SSH_USER@$HOST":$APP/
+  crypto_bot.py trades.py requirements.txt deploy/cryptobot.service "$SSH_USER@$HOST":$APP/
 rsync -az --rsync-path="sudo rsync" --chmod=F600 -e "ssh $SSH_OPTS" \
   .env "$SSH_USER@$HOST":$APP/.env
 
