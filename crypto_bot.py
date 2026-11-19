@@ -1,37 +1,63 @@
 import asyncio
+import json
 import os
 from datetime import datetime, timedelta
 import requests
 from telethon import TelegramClient, events, Button
-from pymongo import MongoClient
+import sqlite3
 from dotenv import load_dotenv
-from bson import ObjectId
 
 # Load environment variables
 load_dotenv()
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
+DB_PATH = os.getenv("DB_PATH", "bot.db")
 
-# MongoDB setup
-mongo_client = MongoClient(MONGO_URI)
-db = mongo_client['crypto_bot']
-users_col = db['users']
+# SQLite setup
+db = sqlite3.connect(DB_PATH)
+db.row_factory = sqlite3.Row
+db.executescript("""
+CREATE TABLE IF NOT EXISTS users (
+    user_id INTEGER PRIMARY KEY
+);
+CREATE TABLE IF NOT EXISTS alerts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    symbol TEXT NOT NULL,
+    target_price REAL NOT NULL,
+    direction TEXT NOT NULL,
+    triggered INTEGER NOT NULL DEFAULT 0,
+    repeat INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_alerts_active ON alerts (triggered, user_id, symbol);
+""")
+db.commit()
 
 # Fetch prices from Binance
-def fetch_prices():
-    symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "ETHFIUSDT"]
-    prices = {}
-    for symbol in symbols:
-        url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
-        try:
-            response = requests.get(url)
-            data = response.json()
-            prices[symbol] = float(data['price'])
-        except Exception:
-            prices[symbol] = None
+SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "ETHFIUSDT"]
+
+def _fetch_prices_sync():
+    """Fetch all prices in one Binance request, with a timeout so it can never hang."""
+    prices = {s: None for s in SYMBOLS}
+    symbols_param = json.dumps(SYMBOLS, separators=(",", ":"))
+    try:
+        response = requests.get(
+            "https://api.binance.com/api/v3/ticker/price",
+            params={"symbols": symbols_param},
+            timeout=10,
+        )
+        response.raise_for_status()
+        for item in response.json():
+            prices[item["symbol"]] = float(item["price"])
+    except Exception as e:
+        print(f"⚠️ Price fetch failed: {e}")
     return prices
+
+async def fetch_prices():
+    # Run the blocking HTTP call in a thread so the bot keeps answering meanwhile
+    return await asyncio.to_thread(_fetch_prices_sync)
 
 # Initialize Telethon bot
 bot = TelegramClient('crypto_bot_session', API_ID, API_HASH).start(bot_token=BOT_TOKEN)
@@ -39,8 +65,9 @@ bot = TelegramClient('crypto_bot_session', API_ID, API_HASH).start(bot_token=BOT
 @bot.on(events.NewMessage(pattern='/start'))
 async def handle_start(event):
     user_id = event.sender_id
-    if not users_col.find_one({"user_id": user_id}):
-        users_col.insert_one({"user_id": user_id})
+    cur = db.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (user_id,))
+    db.commit()
+    if cur.rowcount:
         print(f"✅ New user added: {user_id}")
     await event.respond(
         "You're now subscribed to crypto updates!\n\n"
@@ -68,12 +95,12 @@ async def set_price_alerts(event):
         is_repeating = True
         price_values = price_values[:-1]
 
-    valid_symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "ETHFIUSDT"]
+    valid_symbols = SYMBOLS
     if symbol not in valid_symbols:
         await event.respond(f"❌ Invalid symbol. Choose from: {', '.join(valid_symbols)}")
         return
 
-    current_price = fetch_prices().get(symbol)
+    current_price = (await fetch_prices()).get(symbol)
     if not current_price:
         await event.respond("⚠️ Could not fetch current price.")
         return
@@ -84,15 +111,12 @@ async def set_price_alerts(event):
             price = float(price_str)
             direction = "above" if price > current_price else "below"
 
-            db['alerts'].insert_one({
-                "user_id": user_id,
-                "symbol": symbol,
-                "target_price": price,
-                "direction": direction,
-                "triggered": False,
-                "repeat": is_repeating,
-                "created_at": datetime.utcnow()
-            })
+            db.execute(
+                "INSERT INTO alerts (user_id, symbol, target_price, direction, triggered, repeat, created_at) "
+                "VALUES (?, ?, ?, ?, 0, ?, ?)",
+                (user_id, symbol, price, direction, int(is_repeating), datetime.utcnow().isoformat())
+            )
+            db.commit()
 
             arrow = "🔼" if direction == "above" else "🔽"
             confirmations.append(f"{arrow} <code>${price:,.2f}</code>")
@@ -109,7 +133,9 @@ async def set_price_alerts(event):
 @bot.on(events.NewMessage(pattern='/la'))
 async def list_alerts(event):
     user_id = event.sender_id
-    alerts = list(db['alerts'].find({"user_id": user_id, "triggered": False}))
+    alerts = db.execute(
+        "SELECT * FROM alerts WHERE user_id = ? AND triggered = 0", (user_id,)
+    ).fetchall()
 
     if not alerts:
         await event.respond("📭 You have no active alerts.")
@@ -124,7 +150,7 @@ async def list_alerts(event):
             user_id,
             msg,
             buttons=[
-                [Button.inline(f"❌ Cancel {alert['symbol']}", data=f"cancel_{alert['_id']}")]
+                [Button.inline(f"❌ Cancel {alert['symbol']}", data=f"cancel_{alert['id']}")]
             ],
             parse_mode='HTML'
         )
@@ -145,10 +171,17 @@ async def handle_help(event):
 
 @bot.on(events.CallbackQuery(pattern=b'cancel_(.*)'))
 async def cancel_alert_button(event):
-    alert_id = event.pattern_match.group(1)
-    result = db['alerts'].delete_one({"_id": ObjectId(alert_id)})
+    try:
+        alert_id = int(event.pattern_match.group(1))
+    except ValueError:
+        await event.answer("⚠️ Could not find alert.", alert=True)
+        return
+    cur = db.execute(
+        "DELETE FROM alerts WHERE id = ? AND user_id = ?", (alert_id, event.sender_id)
+    )
+    db.commit()
 
-    if result.deleted_count == 1:
+    if cur.rowcount == 1:
         await event.answer("✅ Alert cancelled", alert=True)
         await event.edit("❌ Alert deleted.")
     else:
@@ -158,19 +191,19 @@ async def cancel_alert_button(event):
 async def cancel_alert_by_symbol(event):
     user_id = event.sender_id
     symbol = event.pattern_match.group(1).upper()
-    result = db['alerts'].delete_many({
-        "user_id": user_id,
-        "symbol": symbol,
-        "triggered": False
-    })
-    if result.deleted_count:
-        await event.respond(f"✅ Cancelled {result.deleted_count} alert(s) for <b>{symbol}</b>", parse_mode='HTML')
+    cur = db.execute(
+        "DELETE FROM alerts WHERE user_id = ? AND symbol = ? AND triggered = 0",
+        (user_id, symbol)
+    )
+    db.commit()
+    if cur.rowcount:
+        await event.respond(f"✅ Cancelled {cur.rowcount} alert(s) for <b>{symbol}</b>", parse_mode='HTML')
     else:
         await event.respond(f"⚠️ No active alerts found for <b>{symbol}</b>", parse_mode='HTML')
 
 @bot.on(events.NewMessage(pattern='/price'))
 async def handle_price_request(event):
-    prices = fetch_prices()
+    prices = await fetch_prices()
 
     msg = f"📊 <b>Crypto Price Snapshot</b> <i>({datetime.now().strftime('%H:%M')})</i>\n\n"
     for sym, val in prices.items():
@@ -187,11 +220,10 @@ async def handle_price_request(event):
     await event.respond(msg, parse_mode='HTML')
 
 async def watch_alerts():
-    alerts_col = db['alerts']
     print("🔍 Alert watcher started.")
     while True:
-        prices = fetch_prices()
-        active_alerts = alerts_col.find({"triggered": False})
+        prices = await fetch_prices()
+        active_alerts = db.execute("SELECT * FROM alerts WHERE triggered = 0").fetchall()
 
         for alert in active_alerts:
             user_id = alert["user_id"]
@@ -217,8 +249,9 @@ async def watch_alerts():
                         f"Current: <code>${price:,.2f}</code>",
                         parse_mode='HTML'
                     )
-                    if not alert.get("repeat"):
-                        alerts_col.update_one({"_id": alert["_id"]}, {"$set": {"triggered": True}})
+                    if not alert["repeat"]:
+                        db.execute("UPDATE alerts SET triggered = 1 WHERE id = ?", (alert["id"],))
+                        db.commit()
                 except Exception as e:
                     print(f"❌ Failed to alert {user_id}: {e}")
 

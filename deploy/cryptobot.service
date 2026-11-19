@@ -1,0 +1,15 @@
+[Unit]
+Description=Crypto price Telegram bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=cryptobot
+WorkingDirectory=/opt/cryptobot
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/cryptobot/venv/bin/python crypto_bot.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
